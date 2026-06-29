@@ -126,6 +126,70 @@ contract FalseReturningERC20 is IERC20 {
     }
 }
 
+/// @dev RevertOnZeroERC20: reverts on transfer/transferFrom when amount == 0,
+///      mimicking tokens that reject zero-value transfers (e.g., some USDT-like
+///      implementations on certain networks).
+contract RevertOnZeroERC20 is IERC20 {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function _checkNonZero(uint256 amount) private pure {
+        if (amount == 0) revert("zero transfer");
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        _checkNonZero(amount);
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        _checkNonZero(amount);
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+}
+
+/// @dev Token that returns false on transfer but succeeds on transferFrom.
+///      Tests the release/refund path specifically — lock via transferFrom works,
+///      but the subsequent release/refund via transfer fails.
+contract ReleaseFalseReturningERC20 is IERC20 {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transfer(address, uint256) external returns (bool) {
+        return false; // Always reject on transfer (release/refund)
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+}
+
 /// @dev Records the last outbound LayerZero send and can replay inbound messages
 ///      back into the escrow as if it were the canonical endpoint.
 contract MockEndpoint is ILayerZeroEndpoint {
@@ -209,6 +273,8 @@ contract PerihelionEscrowTest is Test {
     event PausedSet(bool paused);
     event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferCancelled(address indexed previousOwner);
+    event Skimmed(address indexed token, address indexed to, uint256 amount);
 
     function setUp() public {
         endpoint = new MockEndpoint();
